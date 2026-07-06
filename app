@@ -18,7 +18,7 @@ creds = Credentials.from_service_account_file(
 client = gspread.authorize(creds)
 
 spreadsheet = client.open_by_url(
-    "https://docs.google.com/spreadsheets/d/1sTfSu3-l-uwcuG5ZHFWr9f52LeyMVxf725PvNEr89cU/edit?gid=508368498#gid=508368498"
+    "https://docs.google.com/spreadsheets/d/1IlH8DKJ02yWh40ww9xFf3RlZ5dMOFMF8OHwDzWwplGs/edit?gid=508368498#gid=508368498"
 )
 
 worksheet = spreadsheet.worksheet(
