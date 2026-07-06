@@ -3,6 +3,16 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
+cursos_disponibles = [
+    "Python 10-12",
+    "Roblox 8-9",
+    "Roblox 10-12",
+    "Minecraft Level 1",
+    "Minecraft Level 2",
+    "Digital Creativity 8-9",
+    "Digital Creativity 10-12",
+]
+
 # ----------------------------------
 # CONFIG
 # ----------------------------------
@@ -34,17 +44,66 @@ spreadsheet = client.open_by_url(
     "https://docs.google.com/spreadsheets/d/1IlH8DKJ02yWh40ww9xFf3RlZ5dMOFMF8OHwDzWwplGs/edit"
 )
 
-worksheet = spreadsheet.worksheet(
-    "LEVELING_REQUESTS"
+def get_or_create_worksheet(title, headers=None):
+    try:
+        ws = spreadsheet.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(
+            title=title,
+            rows="1000",
+            cols="20"
+        )
+        if headers:
+            ws.append_row(headers)
+    return ws
+
+worksheet = get_or_create_worksheet(
+    "LEVELING_REQUESTS",
+    headers=[
+        "Fecha",
+        "ID",
+        "Estudiante",
+        "Edad",
+        "Backoffice",
+        "Graduado",
+        "Curso",
+        "Solicitud",
+        "Estado",
+        "Creado por",
+        "Observaciones",
+        "TL",
+        "Tutor",
+        "Mensaje"
+    ]
+)
+
+worksheet_extras = get_or_create_worksheet(
+    "EXTRA_REQUESTS",
+    headers=[
+        "Fecha",
+        "ID",
+        "Backoffice del Estudiante",
+        "Backoffice del grupo",
+        "Tiempo de la clase extra",
+        "Curso",
+        "Clases a recuperar",
+        "Tipo de clase extra",
+        "Observaciones",
+        "Creado por:",
+        "TL",
+        "Tutor",
+        "Mensaje",
+        "Enviado a Slack"
+    ]
 )
 
 # ----------------------------------
 # GENERAR ID
 # ----------------------------------
 
-def generar_id():
+def generar_id(sheet):
 
-    data = worksheet.get_all_values()
+    data = sheet.get_all_values()
 
     ids = []
 
@@ -56,16 +115,15 @@ def generar_id():
             pass
 
     # Si aún no hay solicitudes,
-    # empezar desde la 3600
+    # empezar desde la 1
     if not ids:
-        return "3600"
+        return "1"
 
     ultimo = max(ids)
 
-    # Si por alguna razón el máximo es menor a 3600,
-    # continuar desde 3600
-    if ultimo < 3600:
-        return "3600"
+    # El siguiente ID es el mayor actual + 1
+    if ultimo < 1:
+        return "1"
 
     return str(ultimo + 1)
 
@@ -104,6 +162,64 @@ def limpiar_columnas(columnas):
         nuevas.append(col)
 
     return nuevas
+
+
+def cargar_solicitudes(sheet):
+    data = sheet.get_all_values()
+
+    if not data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        data[1:],
+        columns=data[0]
+    )
+
+    df.columns = (
+        df.columns
+        .astype(str)
+        .str.strip()
+    )
+
+    df = df.replace(
+        r'^\s*$',
+        pd.NA,
+        regex=True
+    ).dropna(how="all")
+
+    if "Fecha" in df.columns:
+        df["Fecha"] = pd.to_datetime(
+            df["Fecha"],
+            errors="coerce"
+        )
+
+    if "Estado" not in df.columns:
+        df["Estado"] = "Open"
+    else:
+        df["Estado"] = df["Estado"].apply(normalize_status)
+
+    return df
+
+
+def get_estado(row):
+    if "Estado" in row.index:
+        estado = str(row.get("Estado", "")).strip()
+        if estado:
+            return estado
+    return "Open"
+
+
+def normalize_status(value):
+    if pd.isna(value):
+        return "Open"
+
+    status = str(value).strip().lower()
+    if status in {"open", "abierto", "opened"}:
+        return "Open"
+    if status in {"pending", "pendiente", "pending review", "pendiente review"}:
+        return "Pending"
+    return str(value).strip() or "Open"
+
 
 def calcular_carga_real(spreadsheet):
 
@@ -244,23 +360,23 @@ def calcular_carga_real(spreadsheet):
 # ----------------------------------
 
 menu = st.sidebar.radio(
-    "Navegación",
+    "Navigation",
     [
-        "🏠 Inicio",
-        "📝 Nueva Solicitud",
-        "👨‍🏫 Asignar Tutor",
-        "📋 Ver Solicitudes",
-        "🔎 Buscar Caso",
-        "📊 Métricas"
+        "🏠 Home",
+        "📝 New Request",
+        "👨‍🏫 Assign Tutor",
+        "📋 View Requests",
+        "🔎 Search Case",
+        "📊 Metrics"
     ]
 )
 # ----------------------------------
 # INICIO
 # ----------------------------------
 
-if menu == "🏠 Inicio":
+if menu == "🏠 Home":
 
-    st.header("🏠 Resumen Operativo")
+    st.header("🏠 Operational Summary")
 
     data = worksheet.get_all_values()
 
@@ -275,6 +391,9 @@ if menu == "🏠 Inicio":
         .str.strip()
     )
 
+    if "Estado" in df.columns:
+        df["Estado"] = df["Estado"].apply(normalize_status)
+
     df["Fecha"] = pd.to_datetime(
         df["Fecha"],
         errors="coerce"
@@ -282,12 +401,11 @@ if menu == "🏠 Inicio":
 
     hoy = pd.Timestamp.today()
 
-    # Casos pendientes
     pendientes = df[
         df["Estado"]
         .astype(str)
         .str.strip()
-        == "Pendiente"
+        .isin(["Open", "Pending"])
     ]
 
     # Casos de esta semana
@@ -324,26 +442,26 @@ if menu == "🏠 Inicio":
     col1, col2, col3, col4 = st.columns(4)
 
     col1.metric(
-        "📌 Pendientes",
+        "📌 Pending",
         len(pendientes)
     )
 
     col2.metric(
-        "👨‍🏫 Tutores con carga",
+        "👨‍🏫 Tutors with load",
         tutores.nunique()
     )
 
     col3.metric(
-        "🚨 SLA vencido",
+        "🚨 SLA overdue",
         len(vencidos)
     )
 
     col4.metric(
-        "📅 Esta semana",
+        "📅 This week",
         len(esta_semana)
     )
 
-    st.subheader("🚨 Casos pendientes más antiguos")
+    st.subheader("🚨 Oldest pending cases")
 
     pendientes = pendientes.sort_values(
         "Dias",
@@ -361,136 +479,230 @@ if menu == "🏠 Inicio":
                 "Dias"
             ]
         ],
-        use_container_width=True
+        width="stretch"
     )
 # ----------------------------------
 # NUEVA SOLICITUD
 # ----------------------------------
 
-elif menu == "📝 Nueva Solicitud":
+elif menu == "📝 New Request":
 
-    st.header("📝 Nueva Solicitud")
+    st.header("📝 New Request")
 
-    nuevo_id = generar_id()
-
-    st.text_input(
-        "ID",
-        value=nuevo_id,
-        disabled=True
-    )
-
-    fecha = st.date_input("Fecha")
-
-    estudiante = st.text_input(
-        "Nombre del estudiante"
-    )
-
-    edad = st.number_input(
-        "Edad",
-        min_value=5,
-        max_value=18,
-        step=1
-    )
-
-    backoffice = st.text_input(
-        "Backoffice"
-    )
-
-    graduado = st.selectbox(
-        "Graduado",
-        ["No", "Sí"]
-    )
-
-    cursos_disponibles = [
-        "Python 10-12",
-        "Roblox 8-9",
-        "Roblox 10-12",
-        "Minecraft Level 1",
-        "Minecraft Level 2",
-        "Digital Creativity 8-9",
-        "Digital Creativity 10-12",
-    ]
-
-    curso = st.selectbox(
-        "Curso",
-        sorted(cursos_disponibles)
-    )
-
-    solicitud = st.selectbox(
-        "Tipo de solicitud",
+    tipo_solicitud = st.selectbox(
+        "Select request type",
         [
             "🟢 Leveling",
-            "🔵 DEMO Class",
-            "🟡 Validation of age / prior knowledge",
-            "🟠 Refund risk / low motivation",
-            "🟣 SEN student",
-            "🔴 Bad sale / expectations were not met"
+            "✨ Extra Class"
         ]
     )
 
-    observaciones = st.text_area(
-        "Observaciones"
-    )
+    if tipo_solicitud == "🟢 Leveling":
 
-    creado_por = st.text_input(
-        "Creado por"
-    )
+        st.subheader("Leveling form")
 
-    if st.button("Guardar Solicitud"):
+        nuevo_id = generar_id(worksheet)
 
-        worksheet.append_row([
-            str(fecha),
-            nuevo_id,
-            estudiante,
-            edad,
-            backoffice,
-            graduado,
-            curso,
-            solicitud,
-            "Abierto",
-            creado_por,
-            observaciones,
-            "",
-            "",
-            ""
-        ])
-
-        st.success(
-            f"✅ Solicitud {nuevo_id} creada correctamente"
+        st.text_input(
+            "ID",
+            value=nuevo_id,
+            disabled=True
         )
+
+        fecha = st.date_input("Date")
+
+        estudiante = st.text_input(
+            "Student name"
+        )
+
+        edad = st.number_input(
+            "Age",
+            min_value=5,
+            max_value=18,
+            step=1
+        )
+
+        backoffice = st.text_input(
+            "Backoffice"
+        )
+
+        graduado = st.selectbox(
+            "Graduate",
+            ["No", "Yes"]
+        )
+
+        curso = st.selectbox(
+            "Course",
+            sorted(cursos_disponibles)
+        )
+
+        solicitud = st.selectbox(
+            "Request type",
+            [
+                "🟢 Leveling",
+                "🔵 DEMO Class",
+                "🟡 Validation of age / prior knowledge",
+                "🟠 Refund risk / low motivation",
+                "🟣 SEN student",
+                "🔴 Bad sale / expectations were not met"
+            ]
+        )
+
+        observaciones = st.text_area(
+            "Observations"
+        )
+
+        creado_por = st.text_input(
+            "Created by"
+        )
+
+        if st.button("Save Request"):
+
+            worksheet.append_row([
+                str(fecha),
+                nuevo_id,
+                estudiante,
+                edad,
+                backoffice,
+                graduado,
+                curso,
+                solicitud,
+                "Open",
+                creado_por,
+                observaciones,
+                "",
+                "",
+                ""
+            ])
+
+            st.success(
+                f"✅ Request {nuevo_id} created successfully"
+            )
+
+    else:
+
+        st.subheader("Extra class form")
+
+        nuevo_id = generar_id(worksheet_extras)
+
+        st.text_input(
+            "ID",
+            value=nuevo_id,
+            disabled=True
+        )
+
+        fecha = st.date_input("Date")
+
+        backoffice_estudiante = st.text_input(
+            "Student Backoffice"
+        )
+
+        backoffice_grupo = st.text_input(
+            "Group Backoffice"
+        )
+
+        tiempo_clase_extra = st.selectbox(
+            "Extra class duration",
+            ["30 min", "60 min"]
+        )
+
+        curso = st.selectbox(
+            "Course",
+            sorted(cursos_disponibles)
+        )
+
+        clases_a_recuperar = st.selectbox(
+            "Lessons to recover",
+            ["Lesson1", "Lesson 1 to Lesson 2", "Lesson 1 to Lesson 3", "Lesson 1 Lesson 4"]
+        )
+
+        tipo_clase = st.selectbox(
+            "Extra class type",
+            ["Reinforcement", "Review", "Assessment", "New Enrollment", "Other"]
+        )
+
+        observaciones = st.text_area(
+            "Observations"
+        )
+
+        creado_por = st.text_input(
+            "Created by"
+        )
+
+        if st.button("Save Extra Class"):
+
+            worksheet_extras.append_row([
+                str(fecha),
+                nuevo_id,
+                backoffice_estudiante,
+                backoffice_grupo,
+                tiempo_clase_extra,
+                curso,
+                clases_a_recuperar,
+                tipo_clase,
+                observaciones,
+                creado_por,
+                "",
+                "",
+                "",
+                ""
+            ])
+
+            st.success(
+                f"✅ Extra class {nuevo_id} created successfully"
+            )
 
 # ----------------------------------
 # ASIGNAR TUTOR
 # ----------------------------------
 
-elif menu == "👨‍🏫 Asignar Tutor":
+elif menu == "👨‍🏫 Assign Tutor":
 
-    st.header("👨‍🏫 Asignar Tutor")
+    st.header("👨‍🏫 Assign Tutor")
 
-    data = worksheet.get_all_values()
+    tipo_asignacion = st.selectbox(
+        "Select assignment type",
+        [
+            "Leveling",
+            "Extra Class"
+        ]
+    )
+
+    target_sheet = (
+        worksheet if tipo_asignacion == "Leveling"
+        else worksheet_extras
+    )
+
+    data = target_sheet.get_all_values()
 
     df = pd.DataFrame(
         data[1:],
         columns=data[0]
     )
 
+    if "Estado" not in df.columns:
+        df["Estado"] = "Open"
+
+    df["Estado"] = df["Estado"].apply(normalize_status)
+
     pendientes = df[
         df["Estado"]
+        .fillna("Open")
         .astype(str)
-        .str.lower()
-        == "abierto"
+        .str.strip()
+        .isin(["Open", "Pending", ""])
     ]
 
     if pendientes.empty:
 
         st.success(
-            "No hay solicitudes abiertas"
+            "There are no open requests"
         )
 
     else:
 
         solicitud_id = st.selectbox(
-            "Selecciona una solicitud",
+            "Select a request",
             pendientes["ID"]
         )
 
@@ -498,27 +710,56 @@ elif menu == "👨‍🏫 Asignar Tutor":
             pendientes["ID"] == solicitud_id
         ].iloc[0]
 
-        st.subheader("Información")
+        st.subheader("Information")
 
-        st.write(
-            f"**Estudiante:** {fila['Estudiante']}"
-        )
+        if tipo_asignacion == "Leveling":
+            st.write(
+                f"**Student:** {fila.get('Estudiante', '')}"
+            )
 
-        st.write(
-            f"**Edad:** {fila['Edad']}"
-        )
+            st.write(
+                f"**Age:** {fila.get('Edad', '')}"
+            )
 
-        st.write(
-            f"**Curso:** {fila['Curso']}"
-        )
+            st.write(
+                f"**Course:** {fila.get('Curso', '')}"
+            )
 
-        st.write(
-            f"**Solicitud:** {fila['Solicitud']}"
-        )
+            st.write(
+                f"**Request:** {fila.get('Solicitud', '')}"
+            )
 
-        st.write(
-            f"**Observaciones:** {fila['Observaciones']}"
-        )
+            st.write(
+                f"**Observations:** {fila.get('Observaciones', '')}"
+            )
+        else:
+            st.write(
+                f"**Student Backoffice:** {fila.get('Backoffice del Estudiante', '')}"
+            )
+
+            st.write(
+                f"**Group Backoffice:** {fila.get('Backoffice del grupo', '')}"
+            )
+
+            st.write(
+                f"**Extra class duration:** {fila.get('Tiempo de la clase extra', '')}"
+            )
+
+            st.write(
+                f"**Course:** {fila.get('Curso', '')}"
+            )
+
+            st.write(
+                f"**Extra class type:** {fila.get('Tipo de clase extra', '')}"
+            )
+
+            st.write(
+                f"**Lessons to recover:** {fila.get('Clases a recuperar', '')}"
+            )
+
+            st.write(
+                f"**Observations:** {fila.get('Observaciones', '')}"
+            )
         
         # ----------------------------------
         # CARGA DE TUTORES
@@ -543,7 +784,7 @@ elif menu == "👨‍🏫 Asignar Tutor":
         if curso_solicitado not in tts_df.columns:
 
             st.error(
-                f"El curso '{curso_solicitado}' no existe en la hoja TTS"
+                f"The course '{curso_solicitado}' does not exist in the TTS sheet"
             )
 
             st.stop()
@@ -566,36 +807,37 @@ elif menu == "👨‍🏫 Asignar Tutor":
                 == "TRUE"
             )
         ]
+        carga_real = {}
         try:
 
             carga_real = calcular_carga_real(
                 spreadsheet
             )
 
-            tutores_curso["Casos"] = (
-                tutores_curso["Name"]
-                .map(carga_real)
-                .fillna(0)
-                .astype(int)
-            )
-
-            tutores_curso = (
-                tutores_curso
-                .sort_values("Casos")
-            )
-
         except Exception as e:
 
             st.warning(
-                f"No fue posible calcular cargas: {e}"
+                f"Could not calculate tutor load: {e}"
             )
+
+        tutores_curso["Casos"] = (
+            tutores_curso["Name"]
+            .map(carga_real)
+            .fillna(0)
+            .astype(int)
+        )
+
+        tutores_curso = (
+            tutores_curso
+            .sort_values("Casos")
+        )
 
             
 
         if tutores_curso.empty:
 
             st.warning(
-                f"No hay tutores activos para {curso_solicitado}"
+                f"There are no active tutors for {curso_solicitado}"
             )
 
             st.stop()
@@ -603,7 +845,7 @@ elif menu == "👨‍🏫 Asignar Tutor":
         # Lista de tutores
 
         opciones_tutor = [
-            f"{row['Name']} ({row['Casos']} casos)"
+            f"{row['Name']} ({row['Casos']} cases)"
             for _, row in tutores_curso.iterrows()
         ]
 
@@ -628,43 +870,73 @@ elif menu == "👨‍🏫 Asignar Tutor":
             tl_options
         )
 
-        if st.button("Asignar Tutor"):
+        if st.button("Assign Tutor"):
 
-            mensaje = f"""
-🚨 *Nueva solicitud asignada*
+            if tipo_asignacion == "Leveling":
+                mensaje = f"""
+🚨 *New request assigned*
 
-Hola *{tutor}* 👋
+Hello *{tutor}* 👋
 
-Se te ha asignado un nuevo caso para revisión.
+A new case has been assigned to you for review.
 
 ━━━━━━━━━━━━━━━━━━
 
-👦 *Estudiante:* {fila['Estudiante']}
-🎂 *Edad:* {fila['Edad']}
+👦 *Student:* {fila['Estudiante']}
+🎂 *Age:* {fila['Edad']}
 🆔 *ID:* {fila['ID']}
-📚 *Curso:* {fila['Curso']}
-📋 *Tipo de solicitud:* {fila['Solicitud']}
+📚 *Course:* {fila['Curso']}
+📋 *Request type:* {fila['Solicitud']}
 
 ━━━━━━━━━━━━━━━━━━
 
-📝 *Observaciones*
+📝 *Observations*
 
 {fila['Observaciones']}
 
 ━━━━━━━━━━━━━━━━━━
 
-⏰ *Importante*
+⏰ *Important*
 
-Este caso debe ser trabajado antes de cumplir *8 días abiertos* para mantener el SLA del proceso.
+This case must be worked before it reaches *8 open days* to maintain SLA compliance.
 
-Una vez finalices la sesión, registra el resultado aquí:
+Once you finish the session, please record the result here:
 
 https://docs.google.com/forms/d/e/1FAIpQLSegzGGAwN9u5SLUsXszXX6eSzgsmZL2kctmJUyenpgn07g36g/viewform
 
-Gracias 💙
+Thank you 💙
+"""
+            else:
+                mensaje = f"""
+🚨 *New extra class assigned*
+
+Hello *{tutor}* 👋
+
+A new extra class has been assigned to you. Please request the Classroom room reservation through the student BO.
+
+━━━━━━━━━━━━━━━━━━
+
+👦 *Student Backoffice:* {fila.get('Backoffice del Estudiante', '')}
+📚 *Course:* {fila.get('Curso', '')}
+⏱️ *Duration:* {fila.get('Tiempo de la clase extra', '')}
+🧾 *Lessons to recover:* {fila.get('Clases a recuperar', '')}
+📋 *Extra class type:* {fila.get('Tipo de clase extra', '')}
+
+━━━━━━━━━━━━━━━━━━
+
+📝 *Observations*
+
+{fila.get('Observaciones', '')}
+
+Thank you 💙
 """
 
-            ids = worksheet.col_values(2)
+            headers = target_sheet.row_values(1)
+
+            def get_col_idx(name):
+                return headers.index(name) + 1
+
+            ids = target_sheet.col_values(2)
 
             for i, valor in enumerate(ids):
 
@@ -672,34 +944,24 @@ Gracias 💙
 
                     fila_sheet = i + 1
 
-                    worksheet.update_cell(
-                        fila_sheet,
-                        12,
-                        tl
-                    )
+                    if "TL" in headers:
+                        target_sheet.update_cell(fila_sheet, get_col_idx("TL"), tl)
 
-                    worksheet.update_cell(
-                        fila_sheet,
-                        13,
-                        tutor
-                    )
+                    if "Tutor" in headers:
+                        target_sheet.update_cell(fila_sheet, get_col_idx("Tutor"), tutor)
 
-                    worksheet.update_cell(
-                        fila_sheet,
-                        14,
-                        mensaje
-                    )
+                    if "Mensaje" in headers:
+                        target_sheet.update_cell(fila_sheet, get_col_idx("Mensaje"), mensaje)
 
-                    worksheet.update_cell(
-                        fila_sheet,
-                        9,
-                        "Pendiente"
-                    )
+                    if "Estado" in headers:
+                        target_sheet.update_cell(fila_sheet, get_col_idx("Estado"), "Pending")
+                    elif "Enviado a Slack" in headers:
+                        target_sheet.update_cell(fila_sheet, get_col_idx("Enviado a Slack"), "Sí")
 
                     break
 
             st.success(
-                "✅ Tutor asignado correctamente"
+                "✅ Tutor assigned successfully"
             )
 
             st.code(
@@ -710,22 +972,28 @@ Gracias 💙
 # VER SOLICITUDES
 # ----------------------------------
 
-elif menu == "📋 Ver Solicitudes":
+elif menu == "📋 View Requests":
 
-    st.header("📋 Solicitudes")
+    st.header("📋 Requests")
 
-    data = worksheet.get_all_values()
+    frames = []
+    for sheet, label in [(worksheet, "Leveling"), (worksheet_extras, "Extra Classes")]:
+        df = cargar_solicitudes(sheet).copy()
+        if df.empty:
+            continue
+        df["Fuente"] = label
+        frames.append(df)
 
-    df = pd.DataFrame(
-        data[1:],
-        columns=data[0]
-    )
+    if not frames:
+        st.info("There are no registered requests")
+        st.stop()
 
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.strip()
-    )
+    df = pd.concat(frames, ignore_index=True)
+
+    df.columns = df.columns.astype(str).str.strip()
+
+    if "Estado" not in df.columns:
+        df["Estado"] = "Open"
 
     # -----------------------------
     # FILTROS
@@ -734,51 +1002,48 @@ elif menu == "📋 Ver Solicitudes":
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-
         estado = st.selectbox(
-            "Estado",
-            ["Todos"] + sorted(
+            "Status",
+            ["All"] + sorted(
                 df["Estado"]
                 .fillna("")
+                .astype(str)
+                .str.strip()
                 .unique()
                 .tolist()
             )
         )
 
     with col2:
-
         curso = st.selectbox(
-            "Curso",
-            ["Todos"] + sorted(
+            "Course",
+            ["All"] + sorted(
                 df["Curso"]
                 .fillna("")
+                .astype(str)
+                .str.strip()
                 .unique()
                 .tolist()
             )
         )
 
     with col3:
-
         tutor = st.selectbox(
             "Tutor",
-            ["Todos"] + sorted(
+            ["All"] + sorted(
                 df["Tutor"]
                 .fillna("")
+                .astype(str)
+                .str.strip()
                 .unique()
                 .tolist()
             )
         )
 
     with col4:
-
-        solicitud = st.selectbox(
-            "Tipo",
-            ["Todos"] + sorted(
-                df["Solicitud"]
-                .fillna("")
-                .unique()
-                .tolist()
-            )
+        tipo = st.selectbox(
+            "Type",
+            ["All", "Leveling", "Extra Classes"]
         )
 
     # -----------------------------
@@ -787,44 +1052,29 @@ elif menu == "📋 Ver Solicitudes":
 
     filtrado = df.copy()
 
-    if estado != "Todos":
-        filtrado = filtrado[
-            filtrado["Estado"] == estado
-        ]
+    if estado != "All":
+        filtrado = filtrado[filtrado["Estado"].astype(str).str.strip() == estado]
 
-    if curso != "Todos":
-        filtrado = filtrado[
-            filtrado["Curso"] == curso
-        ]
+    if curso != "All":
+        filtrado = filtrado[filtrado["Curso"].astype(str).str.strip() == curso]
 
-    if tutor != "Todos":
-        filtrado = filtrado[
-            filtrado["Tutor"] == tutor
-        ]
+    if tutor != "All":
+        filtrado = filtrado[filtrado["Tutor"].astype(str).str.strip() == tutor]
 
-    if solicitud != "Todos":
-        filtrado = filtrado[
-            filtrado["Solicitud"] == solicitud
-        ]
+    if tipo != "All":
+        filtrado = filtrado[filtrado["Fuente"] == tipo]
 
     # -----------------------------
     # BUSCADOR
     # -----------------------------
 
-    buscar = st.text_input(
-        "🔍 Buscar estudiante o ID"
-    )
+    buscar = st.text_input("🔍 Search student, ID, or backoffice")
 
     if buscar:
-
         buscar = buscar.lower()
-
         filtrado = filtrado[
             filtrado.astype(str)
-            .apply(
-                lambda fila:
-                fila.str.lower().str.contains(buscar)
-            )
+            .apply(lambda fila: fila.str.lower().str.contains(buscar))
             .any(axis=1)
         ]
 
@@ -832,557 +1082,341 @@ elif menu == "📋 Ver Solicitudes":
     # RESULTADOS
     # -----------------------------
 
-    st.success(
-        f"Mostrando {len(filtrado)} solicitudes"
-    )
+    st.success(f"Showing {len(filtrado)} requests")
 
-    df["Fecha"] = pd.to_datetime(
-        df["Fecha"],
-        errors="coerce"
-    )
+    if "Fecha" in filtrado.columns:
+        filtrado = filtrado.copy()
+        filtrado["Fecha"] = pd.to_datetime(filtrado["Fecha"], errors="coerce")
+        filtrado["Open days"] = (
+            (pd.Timestamp.today().normalize() - filtrado["Fecha"]).dt.days.fillna(0).astype(int)
+        )
 
-    df["Días abiertos"] = (
-        (
-            pd.Timestamp.today().normalize()
-            - df["Fecha"]
-        ).dt.days
-        .fillna(0)
-        .astype(int)
-    )
-    
-    def color_sla(row):
-
-        dias = row["Días abiertos"]
-
-        if pd.isna(dias):
+        def color_sla(row):
+            dias = row["Open days"]
+            if pd.isna(dias):
+                return [""] * len(row)
+            if dias >= 8:
+                return ["background-color:#ffb3b3"] * len(row)
+            if dias >= 6:
+                return ["background-color:#fff0b3"] * len(row)
             return [""] * len(row)
 
-        if dias >= 8:
-            return ["background-color:#ffb3b3"] * len(row)
-
-        elif dias >= 6:
-            return ["background-color:#fff0b3"] * len(row)
-
-        return [""] * len(row)
-
-    st.dataframe(
-        df.style.apply(color_sla, axis=1),
-        use_container_width=True
-    )
+        st.dataframe(filtrado.style.apply(color_sla, axis=1), width="stretch")
+    else:
+        st.dataframe(filtrado, width="stretch")
 # ----------------------------------
 # BUSCAR CASO
 # ----------------------------------
 
-elif menu == "🔎 Buscar Caso":
+elif menu == "🔎 Search Case":
 
-    st.header("🔎 Buscar Caso")
+    st.header("🔎 Search Case")
+
+    tipo_busqueda = st.selectbox(
+        "Case type",
+        ["Leveling", "Extra Classes", "Both"]
+    )
 
     id_busqueda = st.text_input(
-        "Ingrese el ID de la solicitud"
+        "Enter the request ID"
     )
 
     if id_busqueda:
 
-        # LEVELING REQUESTS
+        # BUSCAR EN LEVELING Y EXTRAS
 
-        data = worksheet.get_all_values()
+        resultados = []
 
-        df = pd.DataFrame(
-            data[1:],
-            columns=data[0]
-        )
-
-        df.columns = (
-            df.columns
-            .astype(str)
-            .str.strip()
-        )
-
-        # Buscar en LEVELING REQUESTS
-
-        solicitud = df[
-            df["ID"]
-            .astype(str)
-            .str.strip()
-            == str(id_busqueda).strip()
-        ]
-
-        if not solicitud.empty:
-
-            fila = solicitud.iloc[0]
-
-            st.subheader("📋 Información del caso (Leveling Request)")
-
-            st.write(solicitud.T)
-
+        tipos_a_buscar = []
+        if tipo_busqueda == "Leveling":
+            tipos_a_buscar = [(worksheet, "Leveling Request")]
+        elif tipo_busqueda == "Extra Classes":
+            tipos_a_buscar = [(worksheet_extras, "Extra Request")]
         else:
+            tipos_a_buscar = [
+                (worksheet, "Leveling Request"),
+                (worksheet_extras, "Extra Request")
+            ]
 
-            st.info(
-                "No se encontró en LEVELING_REQUESTS. Buscando en TLa..."
+        for sheet, etiqueta in tipos_a_buscar:
+            data = sheet.get_all_values()
+
+            if not data:
+                continue
+
+            df = pd.DataFrame(
+                data[1:],
+                columns=data[0]
             )
 
-    
-        # --------------------------
-        # TLA
-        # --------------------------
-
-        try:
-
-            tla_ws = spreadsheet.worksheet(
-                "TLa"
-            )
-
-            tla_data = tla_ws.get_all_values()
-
-            tla_df = pd.DataFrame(
-                tla_data[1:],
-                columns=tla_data[0]
-            )
-
-            tla_df.columns = limpiar_columnas(
-                tla_df.columns
-            )
-
-            tla_match = tla_df[
-                tla_df["ID"]
+            df.columns = (
+                df.columns
                 .astype(str)
+                .str.strip()
+            )
+
+            match = df[
+                df["ID"]
+                .astype(str)
+                .str.strip()
                 == str(id_busqueda).strip()
             ]
 
-            if tla_match.empty:
+            if not match.empty:
+                resultados.append((etiqueta, match.iloc[0], match))
 
-                st.warning(
-                    "No se encontró el ID en CS"
-                )
-
-            else:
-
-                st.success(
-                    "✅ ID encontrado en CS"
-                )
-
-                fila_tla = tla_match.iloc[0]
-
-                st.subheader("📋 Información del Caso (CS)")
-
-                st.write(f"**ID:** {fila_tla['ID']}")
-                st.write(f"**Edad:** {fila_tla['Age']}")
-                st.write(f"**Curso actual:** {fila_tla['Curso ACTUAL']}")
-                st.write(f"**Curso sugerido:** {fila_tla['Course para ofrecer \n(puede ser el mismo)']}")
-                st.write(f"**Descripción:** {fila_tla['Descripción']}")
-
-                bo_url = tla_match[
-                    "Link al Back Office del estudiante"
-                ].iloc[0]
-
-                codigo_bo = extraer_codigo_bo(
-                    bo_url
-                )
-
-        except Exception as e:
-
-            st.error(
-                f"Error leyendo TLa: {e}"
+        if not resultados:
+            st.warning(
+                "The ID was not found in the selected search"
             )
-
             st.stop()
-        
-        if not tla_match.empty:
+
+        if len(resultados) > 1:
+            opciones = [etiqueta for etiqueta, _, _ in resultados]
+            etiqueta_seleccionada = st.selectbox(
+                "Select the case type to view the details",
+                opciones
+            )
+            etiqueta, fila, match = next(
+                item for item in resultados if item[0] == etiqueta_seleccionada
+            )
+        else:
+            etiqueta, fila, match = resultados[0]
+
+        st.subheader(f"📋 Case information ({etiqueta})")
+
+        st.write(match.T)
 
         # --------------------------
         # RESPUESTAS
         # --------------------------
 
-            try:
+        if etiqueta == "Extra Request":
+            st.info("Case found as an extra class. No leveling result applies.")
 
-                respuestas_ws = spreadsheet.worksheet(
-                    "answers"
-                )
+        try:
 
-                respuestas_data = respuestas_ws.get_all_values()
+            respuestas_ws = spreadsheet.worksheet(
+                "answers"
+            )
 
-                respuestas_df = pd.DataFrame(
-                    respuestas_data[1:],
-                    columns=respuestas_data[0]
-                )
+            respuestas_data = respuestas_ws.get_all_values()
 
-                respuestas_df.columns = limpiar_columnas(
-                    respuestas_df.columns
-                )
+            respuestas_df = pd.DataFrame(
+                respuestas_data[1:],
+                columns=respuestas_data[0]
+            )
 
-                respuesta = respuestas_df[
-                    respuestas_df[
-                        "ID de la solicitud que te hicieron (OJO Está en el hilo de slack donde fuiste asignado)"
-                    ]
-                    .astype(str)
-                    == str(id_busqueda)
+            respuestas_df.columns = limpiar_columnas(
+                respuestas_df.columns
+            )
+
+            respuesta = respuestas_df[
+                respuestas_df[
+                    "ID de la solicitud que te hicieron (OJO Está en el hilo de slack donde fuiste asignado)"
                 ]
+                .astype(str)
+                == str(id_busqueda).strip()
+            ]
 
-                if not respuesta.empty:
+            if not respuesta.empty:
 
-                    st.success(
-                        "✅ Resultado encontrado en RESPUESTAS"
-                    )
-
-                    fila_respuesta = respuesta.iloc[0]
-
-                    st.subheader("📊 Resultado de la Nivelación")
-
-                    st.write(
-                        f"**Curso:** {fila_respuesta.get('Curso', 'N/A')}"
-                    )
-
-                    st.write(
-                        f"**Tipo de grupo:** {fila_respuesta.get('Tipo de grupo:', 'N/A')}"
-                    )
-
-                    st.write(
-                        f"**Nivel sugerido:** {fila_respuesta.get('Nivel sugerido:', 'N/A')}"
-                    )
-
-                    st.write(
-                        f"**Nivel sugerido:** {fila_respuesta.get('Resultado nivelación:  (información para CS/ISM)', 'N/A')}"
-                    )
-
-
-            except Exception as e:
-
-                st.error(
-                    f"No se encontró respuesta en RESPUESTAS"
+                st.success(
+                    "✅ Result found in RESPUESTAS"
                 )
 
-            # --------------------------
-            # RESPUESTAS GRADUADOS
-            # --------------------------
+                fila_respuesta = respuesta.iloc[0]
 
-            try:
+                st.subheader("📊 Leveling result")
 
-                grad_ws = spreadsheet.worksheet(
-                    "answers - graduates"
+                st.write(
+                    f"**Course:** {fila_respuesta.get('Curso', 'N/A')}"
                 )
 
-                grad_data = grad_ws.get_all_values()
-
-                grad_df = pd.DataFrame(
-                    grad_data[1:],
-                    columns=grad_data[0]
+                st.write(
+                    f"**Group type:** {fila_respuesta.get('Tipo de grupo:', 'N/A')}"
                 )
 
-                grad_df.columns = limpiar_columnas(
-                    grad_df.columns
+                st.write(
+                    f"**Suggested level:** {fila_respuesta.get('Nivel sugerido:', 'N/A')}"
                 )
 
-                grad_df["codigo_bo"] = (
-                    grad_df["BO del estudiante"]
-                    .apply(extraer_codigo_bo)
+                st.write(
+                    f"**Nivel sugerido:** {fila_respuesta.get('Resultado nivelación:  (información para CS/ISM)', 'N/A')}"
                 )
+
+            else:
+
+                st.info(
+                    "No result found in RESPUESTAS"
+                )
+
+        except Exception as e:
+
+            st.error(
+                f"Error reading RESPUESTAS: {e}"
+            )
+
+        # --------------------------
+        # RESPUESTAS GRADUADOS
+        # --------------------------
+
+        try:
+
+            grad_ws = spreadsheet.worksheet(
+                "answers - graduates"
+            )
+
+            grad_data = grad_ws.get_all_values()
+
+            grad_df = pd.DataFrame(
+                grad_data[1:],
+                columns=grad_data[0]
+            )
+
+            grad_df.columns = limpiar_columnas(
+                grad_df.columns
+            )
+
+            grad_df["codigo_bo"] = (
+                grad_df["BO del estudiante"]
+                .apply(extraer_codigo_bo)
+            )
+
+            backoffice = str(
+                fila.get("Backoffice", "") or fila.get("Backoffice del Estudiante", "")
+            ).strip()
+
+            codigo_bo = extraer_codigo_bo(backoffice)
+
+            if codigo_bo:
 
                 resultado_grad = grad_df[
                     grad_df["codigo_bo"]
                     == codigo_bo
                 ]
 
-                if not resultado_grad.empty:
+            else:
 
-                    st.success("🎓 Resultado encontrado en answers - graduates")
+                resultado_grad = pd.DataFrame()
 
-                    fila_grad = resultado_grad.iloc[0]
+            if not resultado_grad.empty:
 
-                    ...   
-
-                else:
-
-                    st.success(
-                    "🎓 Resultado encontrado en answers - graduates"
-                )
+                st.success("🎓 Result found in answers - graduates")
 
                 fila_grad = resultado_grad.iloc[0]
 
-                st.subheader("🎓 Resultado de Graduación")
+                st.subheader("🎓 Graduation result")
 
                 st.write(
-                    f"**¿Apto para continuar?:** {fila_grad.get('¿Consideras que el(la) estudiante está apto para continuar con otro curso más avanzado dentro de kodland?', 'N/A')}"
+                    f"**Ready to continue?:** {fila_grad.get('¿Consideras que el(la) estudiante está apto para continuar con otro curso más avanzado dentro de kodland?', 'N/A')}"
                 )
 
                 st.write(
-                    f"**Curso recomendado:** {fila_grad.get('Curso que recomiendas', 'N/A')}"
+                    f"**Recommended course:** {fila_grad.get('Curso que recomiendas', 'N/A')}"
                 )
 
-                st.subheader("📝 Feedback del Tutor")
+                st.subheader("📝 Tutor feedback")
 
                 st.info(
                     fila_grad.get(
                         'Feedback',
-                        'Sin feedback'
+                        'No feedback'
                     )
                 )
 
-            except Exception as e:
+            else:
 
-                st.error(
-                    f"No se encontró respuesta en RESPUESTAS - GRADUADOS"
+                st.info(
+                    "No result found in answers - graduates"
                 )
 
-# ----------------------------------
+        except Exception as e:
+
+            st.error(
+                f"Error reading RESPUESTAS - GRADUADOS: {e}"
+            )
 # METRICAS
 # ----------------------------------
-elif menu == "📊 Métricas":
+elif menu == "📊 Metrics":
 
-    import re
+    st.header("📊 Operational Dashboard")
 
-    st.header("📊 Dashboard Operativo")
+    def render_metrics_for_sheet(sheet, title):
+        df = cargar_solicitudes(sheet)
 
-    # ==================================
-    # CARGAR LEVELING
-    # ==================================
+        if df.empty:
+            st.info(f"No data for {title}")
+            return
 
-    data = worksheet.get_all_values()
+        st.subheader(title)
 
-    df = pd.DataFrame(
-        data[1:],
-        columns=data[0]
-    )
-
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.strip()
-    )
-
-    df = df.replace(
-        r'^\s*$',
-        pd.NA,
-        regex=True
-    ).dropna(how="all")
-
-    # ==================================
-    # FECHA
-    # ==================================
-
-    df["Fecha"] = pd.to_datetime(
-        df["Fecha"],
-        errors="coerce"
-    )
-
-    # ==================================
-    # PENDIENTES
-    # ==================================
-
-    estado = (
-        df["Estado"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
-    pendientes = df[
-        estado.eq("Pendiente")
-    ]
-
-    # ==================================
-    # SOLICITUDES POR SEMANA
-    # ==================================
-
-    st.subheader("📅 Solicitudes por semana")
-
-    solicitudes = df.copy()
-
-    solicitudes = solicitudes[
-        solicitudes["Fecha"].notna()
-    ]
-
-    solicitudes["Semana"] = (
-        solicitudes["Fecha"]
-        .dt.strftime("%Y-W%U")
-    )
-
-    solicitudes["Solicitud"] = (
-        solicitudes["Solicitud"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
-    solicitudes = solicitudes[
-        solicitudes["Solicitud"] != ""
-    ]
-
-    tabla_semana = pd.pivot_table(
-        solicitudes,
-        index="Semana",
-        columns="Solicitud",
-        aggfunc="size",
-        fill_value=0
-    )
-
-    tabla_semana["Total"] = (
-        tabla_semana.sum(axis=1)
-    )
-
-    tabla_semana = (
-        tabla_semana
-        .sort_index(
-            ascending=False
-        )
-    )
-
-    st.dataframe(
-        tabla_semana.reset_index(),
-        use_container_width=True
-    )
-
-    # ==================================
-    # CURSOS SOLICITADOS
-    # ==================================
-
-    st.subheader("📚 Cursos solicitados")
-
-    cursos = []
-
-    for valor in df["Curso"].fillna(""):
-
-        valor = str(valor).strip()
-
-        if valor:
-            cursos.append(valor)
-
-    if cursos:
-
-        cursos_df = (
-            pd.Series(cursos)
-            .value_counts()
-            .reset_index()
-        )
-
-        cursos_df.columns = [
-            "Curso",
-            "Cantidad"
-        ]
-
-        st.dataframe(
-            cursos_df,
-            use_container_width=True
-        )
-
-    # ==================================
-    # CASOS POR TUTOR
-    # ==================================
-
-    st.subheader("👨‍🏫 Casos por tutor")
-
-    tutores = []
-
-    for valor in df["Tutor"].fillna(""):
-
-        valor = str(valor).strip()
-
-        if valor:
-            tutores.append(valor)
-
-    if tutores:
-
-        tutores_df = (
-            pd.Series(tutores)
-            .value_counts()
-            .reset_index()
-        )
-
-        tutores_df.columns = [
-            "Tutor",
-            "Casos"
-        ]
-
-        st.dataframe(
-            tutores_df,
-            use_container_width=True
-        )
-
-    # ==================================
-    # PENDIENTES POR TUTOR
-    # ==================================
-
-    st.subheader("🚨 Carga actual de tutores")
-
-    pendientes = (
-        df[
+        estados = (
             df["Estado"]
-            .fillna("")
+            .fillna("Open")
+            .astype(str)
             .str.strip()
-            .eq("Pendiente")
-        ]
-    )
-
-    carga = (
-        pendientes.groupby("Tutor")
-        .size()
-        .reset_index(name="Pendientes")
-    )
-
-    carga = carga[
-        carga["Tutor"].str.strip() != ""
-    ]
-
-    carga = carga.sort_values(
-        "Pendientes",
-        ascending=False
-    )
-
-    def estado(cantidad):
-        if cantidad >= 6:
-            return "🔴 Alta"
-
-        elif cantidad >= 4:
-            return "🟡 Media"
-
-        return "🟢 Baja"
-
-    carga["Carga"] = carga["Pendientes"].apply(estado)
-    
-    st.dataframe(
-        carga,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    # ==================================
-    # PENDIENTES POR SEMANA
-    # ==================================
-
-    pend = pendientes.copy()
-
-    pend["Semana"] = (
-        pend["Fecha"]
-        .dt.strftime("%Y-W%U")
-    )
-
-    tabla_pend = (
-        pend.groupby("Semana")
-        .size()
-        .reset_index(name="Pendientes")
-        .sort_values(
-            "Semana",
-            ascending=False
         )
-    )
 
-    st.subheader(
-        "📅 Pendientes por semana"
-    )
+        pendientes = df[
+            estados.isin(["Open", "Pending"])
+        ]
 
-    st.dataframe(
-        tabla_pend,
-        use_container_width=True
-    )
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total", len(df))
+        col2.metric("Pending", len(pendientes))
+        col3.metric(
+            "Assigned",
+            int((pendientes["Tutor"].fillna("").astype(str).str.strip() != "").sum())
+        )
 
-    # ==================================
-    # LISTADO PENDIENTES
-    # ==================================
+        if "Fecha" in df.columns and df["Fecha"].notna().any():
+            solicitudes = df[df["Fecha"].notna()].copy()
+            solicitudes["Semana"] = solicitudes["Fecha"].dt.strftime("%Y-W%U")
+            col_name = "Solicitud" if "Solicitud" in solicitudes.columns else "Tipo de clase extra"
+            tabla_semana = pd.pivot_table(
+                solicitudes,
+                index="Semana",
+                columns=col_name,
+                aggfunc="size",
+                fill_value=0
+            )
+            tabla_semana["Total"] = tabla_semana.sum(axis=1)
+            st.dataframe(tabla_semana.reset_index(), width="stretch")
 
-    st.subheader(
-        f"🚨 Casos pendientes ({len(pendientes)})"
-    )
+        if "Curso" in df.columns:
+            cursos = [
+                str(valor).strip()
+                for valor in df["Curso"].fillna("")
+                if str(valor).strip()
+            ]
+            if cursos:
+                cursos_df = pd.Series(cursos).value_counts().reset_index()
+                cursos_df.columns = ["Curso", "Cantidad"]
+                st.dataframe(cursos_df, width="stretch")
 
-    st.dataframe(
-        pendientes,
-        use_container_width=True
-    )
+        if "Tutor" in df.columns:
+            tutores = [
+                str(valor).strip()
+                for valor in df["Tutor"].fillna("")
+                if str(valor).strip()
+            ]
+            if tutores:
+                tutores_df = pd.Series(tutores).value_counts().reset_index()
+                tutores_df.columns = ["Tutor", "Casos"]
+                st.dataframe(tutores_df, width="stretch")
+
+        if not pendientes.empty:
+            st.dataframe(
+                pendientes[[
+                    "ID",
+                    "Curso",
+                    "Tutor",
+                    "Estado",
+                    "Fecha"
+                ]].sort_values("Fecha", ascending=False),
+                width="stretch"
+            )
+
+    render_metrics_for_sheet(worksheet, "📘 Leveling")
+    render_metrics_for_sheet(worksheet_extras, "✨ Extra Classes")
