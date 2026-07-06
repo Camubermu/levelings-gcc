@@ -27,7 +27,7 @@ worksheet = spreadsheet.worksheet(
 
 data = worksheet.get_all_values()
 
-st.write("Filas encontradas:", len(data))
+st.write("Rows Finded:", len(data))
 
 df = pd.DataFrame(
     data[1:],
