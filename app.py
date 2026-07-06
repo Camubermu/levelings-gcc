@@ -8,11 +8,11 @@ from google.oauth2.service_account import Credentials
 # ----------------------------------
 
 st.set_page_config(
-    page_title="Leveling Dashboard",
+    page_title="GCC Leveling Dashboard",
     layout="wide"
 )
 
-st.title("🚀 Leveling Dashboard")
+st.title("🚀GCC Leveling Dashboard")
 
 # ----------------------------------
 # GOOGLE SHEETS
@@ -31,7 +31,7 @@ creds = Credentials.from_service_account_info(
 client = gspread.authorize(creds)
 
 spreadsheet = client.open_by_url(
-    "https://docs.google.com/spreadsheets/d/1sTfSu3-l-uwcuG5ZHFWr9f52LeyMVxf725PvNEr89cU/edit"
+    "https://docs.google.com/spreadsheets/d/1IlH8DKJ02yWh40ww9xFf3RlZ5dMOFMF8OHwDzWwplGs/edit"
 )
 
 worksheet = spreadsheet.worksheet(
@@ -70,7 +70,7 @@ def generar_id():
     return str(ultimo + 1)
 
 # ----------------------------------
-# EXTRAERC CODIGO 
+# EXTRAER CODIGO 
 # ----------------------------------
 def extraer_codigo_bo(valor):
 
@@ -200,7 +200,7 @@ def calcular_carga_real(spreadsheet):
     # TLA
     # ----------------------------------
 
-    tla_ws = spreadsheet.worksheet("TLa")
+    tla_ws = spreadsheet.worksheet("CS")
 
     tla_data = tla_ws.get_all_values()
 
@@ -403,26 +403,12 @@ elif menu == "📝 Nueva Solicitud":
 
     cursos_disponibles = [
         "Python 10-12",
-        "Python Pro",
-        "Scratch 8-9",
-        "Scratch 10-12",
-        "Web",
-        "FWD",
-        "FWD Pro",
         "Roblox 8-9",
         "Roblox 10-12",
-        "UNITY",
+        "Minecraft Level 1",
+        "Minecraft Level 2",
         "Digital Creativity 8-9",
         "Digital Creativity 10-12",
-        "Graphic Design",
-        "Illustration",
-        "Minecraft",
-        "Minecraft Level 2",
-        "Drawing on Paper",
-        "Math 8-10",
-        "Math 10-12",
-        "Early Math 5-8",
-        "FunTech"
     ]
 
     curso = st.selectbox(
@@ -966,18 +952,18 @@ elif menu == "🔎 Buscar Caso":
             if tla_match.empty:
 
                 st.warning(
-                    "No se encontró el ID en TLa"
+                    "No se encontró el ID en CS"
                 )
 
             else:
 
                 st.success(
-                    "✅ ID encontrado en TLa"
+                    "✅ ID encontrado en CS"
                 )
 
                 fila_tla = tla_match.iloc[0]
 
-                st.subheader("📋 Información del Caso (TLa)")
+                st.subheader("📋 Información del Caso (CS)")
 
                 st.write(f"**ID:** {fila_tla['ID']}")
                 st.write(f"**Edad:** {fila_tla['Age']}")
@@ -1010,7 +996,7 @@ elif menu == "🔎 Buscar Caso":
             try:
 
                 respuestas_ws = spreadsheet.worksheet(
-                    "respuestas"
+                    "answers"
                 )
 
                 respuestas_data = respuestas_ws.get_all_values()
@@ -1072,7 +1058,7 @@ elif menu == "🔎 Buscar Caso":
             try:
 
                 grad_ws = spreadsheet.worksheet(
-                    "respuestas - graduados"
+                    "answers - graduates"
                 )
 
                 grad_data = grad_ws.get_all_values()
@@ -1098,7 +1084,7 @@ elif menu == "🔎 Buscar Caso":
 
                 if not resultado_grad.empty:
 
-                    st.success("🎓 Resultado encontrado en RESPUESTAS - GRADUADOS")
+                    st.success("🎓 Resultado encontrado en answers - graduates")
 
                     fila_grad = resultado_grad.iloc[0]
 
@@ -1107,7 +1093,7 @@ elif menu == "🔎 Buscar Caso":
                 else:
 
                     st.success(
-                    "🎓 Resultado encontrado en RESPUESTAS - GRADUADOS"
+                    "🎓 Resultado encontrado en answers - graduates"
                 )
 
                 fila_grad = resultado_grad.iloc[0]
