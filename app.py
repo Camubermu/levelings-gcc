@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import gspread
@@ -9,8 +10,8 @@ cursos_disponibles = [
     "Roblox 10-12",
     "Minecraft Level 1",
     "Minecraft Level 2",
-    "Digital Creativity 8-9",
-    "Digital Creativity 10-12",
+    "Digital Creativity Level 1",
+    "Digital Creativity Level 2",
 ]
 
 # ----------------------------------
@@ -43,6 +44,22 @@ client = gspread.authorize(creds)
 spreadsheet = client.open_by_url(
     "https://docs.google.com/spreadsheets/d/1IlH8DKJ02yWh40ww9xFf3RlZ5dMOFMF8OHwDzWwplGs/edit"
 )
+
+@st.cache_data(show_spinner=False, ttl=30)
+def leer_hoja_valores(title):
+    ws = spreadsheet.worksheet(title)
+    return ws.get_all_values()
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def leer_hoja_registros(title):
+    ws = spreadsheet.worksheet(title)
+    return ws.get_all_records()
+
+
+def limpiar_cache_hojas():
+    st.cache_data.clear()
+
 
 def get_or_create_worksheet(title, headers=None):
     try:
@@ -103,7 +120,7 @@ worksheet_extras = get_or_create_worksheet(
 
 def generar_id(sheet):
 
-    data = sheet.get_all_values()
+    data = leer_hoja_valores(sheet.title)
 
     ids = []
 
@@ -165,7 +182,7 @@ def limpiar_columnas(columnas):
 
 
 def cargar_solicitudes(sheet):
-    data = sheet.get_all_values()
+    data = leer_hoja_valores(sheet.title)
 
     if not data:
         return pd.DataFrame()
@@ -221,6 +238,216 @@ def normalize_status(value):
     return str(value).strip() or "Open"
 
 
+def limpiar_texto(valor):
+    return str(valor or "").strip().lower()
+
+
+def normalizar_curso(valor):
+    if pd.isna(valor):
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", str(valor).strip().lower()).strip()
+
+
+def inferir_curso_desde_texto(texto):
+    if not texto:
+        return None
+
+    texto_normalizado = normalizar_curso(texto)
+
+    if not texto_normalizado:
+        return None
+
+    patrones = {
+        "Digital Creativity Level 1": [
+            "digital creativity level 1",
+            "digital creativity level1",
+            "dc level 1",
+            "dc level1",
+            "digital creativity 1",
+        ],
+        "Digital Creativity 8-9": [
+            "digital creativity 8 9",
+            "digital creativity 8-9",
+            "digital creativity 8 to 9",
+        ],
+        "Digital Creativity 10-12": [
+            "digital creativity 10 12",
+            "digital creativity 10-12",
+            "digital creativity 10 to 12",
+        ],
+        "Minecraft Level 1": [
+            "minecraft level 1",
+            "minecraft level1",
+        ],
+        "Minecraft Level 2": [
+            "minecraft level 2",
+            "minecraft level2",
+        ],
+        "Python 10-12": [
+            "python 10 12",
+            "python 10-12",
+            "python 10 to 12",
+        ],
+        "Roblox 8-9": [
+            "roblox 8 9",
+            "roblox 8-9",
+            "roblox 8 to 9",
+        ],
+        "Roblox 10-12": [
+            "roblox 10 12",
+            "roblox 10-12",
+            "roblox 10 to 12",
+        ],
+    }
+
+    for curso, patrones_curso in patrones.items():
+        if any(patron in texto_normalizado for patron in patrones_curso):
+            return curso
+
+    return None
+
+
+def inferir_curso_desde_grupo(nombre_grupo):
+    if not nombre_grupo:
+        return None
+
+    nombre = str(nombre_grupo).strip().upper()
+
+    match_codigo = re.search(r'GCC\s*(RO|PY|ME|DC)', nombre)
+    if not match_codigo:
+        return None
+
+    codigo = match_codigo.group(1)
+
+    match_edad = re.search(r'\((\d+[\s-]+\d+)\s*[^)]*\)', nombre)
+    if not match_edad:
+        return None
+
+    edad_raw = re.sub(r'\s+', '-', match_edad.group(1).strip())
+
+    mapeo_codigos = {
+        "RO": "Roblox",
+        "PY": "Python",
+        "ME": "Minecraft",
+        "DC": "Digital Creativity",
+    }
+
+    materia = mapeo_codigos[codigo]
+
+    if materia in ("Roblox", "Python"):
+        curso = f"{materia} {edad_raw}"
+        if curso in cursos_disponibles:
+            return curso
+        return None
+
+    nums = re.findall(r'\d+', edad_raw)
+    if nums:
+        primer_num = int(nums[0])
+        nivel = "Level 1" if primer_num <= 12 else "Level 2"
+        curso = f"{materia} {nivel}"
+        if curso in cursos_disponibles:
+            return curso
+
+    return None
+
+
+def obtener_tutor_por_grupo(grupo_backoffice, spreadsheet):
+    try:
+        groups_data = leer_hoja_valores("Groups & Tutors")
+    except Exception:
+        return "", None
+
+    if not groups_data:
+        return "", None
+
+    groups_df = pd.DataFrame(groups_data[1:], columns=groups_data[0])
+    groups_df.columns = groups_df.columns.astype(str).str.strip()
+
+    grupo_backoffice = str(grupo_backoffice or "").strip()
+    if not grupo_backoffice:
+        return "", None
+
+    grupo_normalizado = limpiar_texto(grupo_backoffice)
+
+    for _, fila in groups_df.iterrows():
+        nombre_grupo = str(fila.iloc[0] or "").strip()
+        if not nombre_grupo:
+            continue
+
+        nombre_grupo_normalizado = limpiar_texto(nombre_grupo)
+        if (
+            nombre_grupo_normalizado == grupo_normalizado
+            or grupo_normalizado in nombre_grupo_normalizado
+        ):
+            tutor = str(fila.iloc[1] or "").strip()
+            return tutor, fila
+
+    return "", None
+
+
+def obtener_tutores_disponibles(curso_solicitado, spreadsheet):
+    try:
+        tts_data = leer_hoja_registros("TTS")
+    except Exception:
+        return pd.DataFrame(columns=["Name", "Casos"])
+
+    if not tts_data:
+        return pd.DataFrame(columns=["Name", "Casos"])
+
+    tts_df = pd.DataFrame(tts_data)
+    tts_df.columns = tts_df.columns.astype(str).str.strip()
+
+    columna_curso = curso_solicitado
+    if columna_curso not in tts_df.columns:
+        columna_curso = next(
+            (
+                columna
+                for columna in tts_df.columns
+                if normalizar_curso(columna) and normalizar_curso(columna) in normalizar_curso(curso_solicitado)
+            ),
+            None
+        )
+
+    if not columna_curso or columna_curso not in tts_df.columns:
+        return pd.DataFrame(columns=["Name", "Casos"])
+
+    tutores_curso = tts_df[
+        (
+            tts_df["Status"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            == "active"
+        )
+        &
+        (
+            tts_df[columna_curso]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            == "TRUE"
+        )
+    ].copy()
+
+    if tutores_curso.empty:
+        return pd.DataFrame(columns=["Name", "Casos"])
+
+    carga_real = {}
+    try:
+        carga_real = calcular_carga_real(spreadsheet)
+    except Exception:
+        carga_real = {}
+
+    tutores_curso["Casos"] = (
+        tutores_curso["Name"]
+        .astype(str)
+        .str.strip()
+        .map(lambda x: int(carga_real.get(x, 0)))
+    )
+
+    return tutores_curso.sort_values("Casos")
+
+
 def calcular_carga_real(spreadsheet):
 
     carga = {}
@@ -229,9 +456,7 @@ def calcular_carga_real(spreadsheet):
     # RESPUESTAS (casos cerrados)
     # ----------------------------------
 
-    respuestas_ws = spreadsheet.worksheet("respuestas")
-
-    respuestas_data = respuestas_ws.get_all_values()
+    respuestas_data = leer_hoja_valores("respuestas")
 
     respuestas_df = pd.DataFrame(
         respuestas_data[1:],
@@ -292,11 +517,7 @@ def calcular_carga_real(spreadsheet):
     # RESPUESTAS GRADUADOS
     # ----------------------------------
 
-    grad_ws = spreadsheet.worksheet(
-        "respuestas - graduados"
-    )
-
-    grad_data = grad_ws.get_all_values()
+    grad_data = leer_hoja_valores("respuestas - graduados")
 
     grad_df = pd.DataFrame(
         grad_data[1:],
@@ -316,9 +537,7 @@ def calcular_carga_real(spreadsheet):
     # TLA
     # ----------------------------------
 
-    tla_ws = spreadsheet.worksheet("CS")
-
-    tla_data = tla_ws.get_all_values()
+    tla_data = leer_hoja_valores("CS")
 
     tla_df = pd.DataFrame(
         tla_data[1:],
@@ -364,7 +583,6 @@ menu = st.sidebar.radio(
     [
         "🏠 Home",
         "📝 New Request",
-        "👨‍🏫 Assign Tutor",
         "📋 View Requests",
         "🔎 Search Case",
         "📊 Metrics"
@@ -378,26 +596,32 @@ if menu == "🏠 Home":
 
     st.header("🏠 Operational Summary")
 
-    data = worksheet.get_all_values()
+    frames = []
 
-    df = pd.DataFrame(
-        data[1:],
-        columns=data[0]
-    )
+    leveling_df = cargar_solicitudes(worksheet).copy()
+    if not leveling_df.empty:
+        leveling_df["Tipo de solicitud"] = "Leveling"
+        frames.append(leveling_df)
 
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.strip()
-    )
+    extras_df = cargar_solicitudes(worksheet_extras).copy()
+    if not extras_df.empty:
+        extras_df["Tipo de solicitud"] = "Extra Class"
+        frames.append(extras_df)
 
-    if "Estado" in df.columns:
+    if not frames:
+        st.info("There are no registered requests")
+        st.stop()
+
+    df = pd.concat(frames, ignore_index=True)
+    df.columns = df.columns.astype(str).str.strip()
+
+    if "Estado" not in df.columns:
+        df["Estado"] = "Open"
+    else:
         df["Estado"] = df["Estado"].apply(normalize_status)
 
-    df["Fecha"] = pd.to_datetime(
-        df["Fecha"],
-        errors="coerce"
-    )
+    if "Fecha" in df.columns:
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
 
     hoy = pd.Timestamp.today()
 
@@ -408,26 +632,17 @@ if menu == "🏠 Home":
         .isin(["Open", "Pending"])
     ]
 
-    # Casos de esta semana
     inicio_semana = hoy - pd.Timedelta(days=hoy.weekday())
+    esta_semana = df[df["Fecha"] >= inicio_semana] if "Fecha" in df.columns else df.iloc[0:0]
 
-    esta_semana = df[
-        df["Fecha"] >= inicio_semana
-    ]
-
-    # Días abiertos
     pendientes = pendientes.copy()
+    if "Fecha" in pendientes.columns:
+        pendientes["Dias"] = (hoy - pendientes["Fecha"]).dt.days
+    else:
+        pendientes["Dias"] = 0
 
-    pendientes["Dias"] = (
-        hoy - pendientes["Fecha"]
-    ).dt.days
+    vencidos = pendientes[pendientes["Dias"] >= 8]
 
-    # Casos vencidos
-    vencidos = pendientes[
-        pendientes["Dias"] >= 8
-    ]
-
-    # Tutores con casos
     tutores = (
         pendientes["Tutor"]
         .fillna("")
@@ -435,52 +650,22 @@ if menu == "🏠 Home":
         .str.strip()
     )
 
-    tutores = tutores[
-        tutores != ""
-    ]
+    tutores = tutores[tutores != ""]
 
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric(
-        "📌 Pending",
-        len(pendientes)
-    )
-
-    col2.metric(
-        "👨‍🏫 Tutors with load",
-        tutores.nunique()
-    )
-
-    col3.metric(
-        "🚨 SLA overdue",
-        len(vencidos)
-    )
-
-    col4.metric(
-        "📅 This week",
-        len(esta_semana)
-    )
+    col1.metric("📌 Pending", len(pendientes))
+    col2.metric("👨‍🏫 Tutors with load", tutores.nunique())
+    col3.metric("🚨 SLA overdue", len(vencidos))
+    col4.metric("📅 This week", len(esta_semana))
 
     st.subheader("🚨 Oldest pending cases")
 
-    pendientes = pendientes.sort_values(
-        "Dias",
-        ascending=False
-    )
+    pendientes = pendientes.sort_values("Dias", ascending=False)
+    columnas_home = ["ID", "Estudiante", "Curso", "Tutor", "Estado", "Tipo de solicitud", "Dias"]
+    columnas_home = [col for col in columnas_home if col in pendientes.columns]
 
-    st.dataframe(
-        pendientes[
-            [
-                "ID",
-                "Estudiante",
-                "Curso",
-                "Tutor",
-                "Estado",
-                "Dias"
-            ]
-        ],
-        width="stretch"
-    )
+    st.dataframe(pendientes[columnas_home], width="stretch")
 # ----------------------------------
 # NUEVA SOLICITUD
 # ----------------------------------
@@ -503,38 +688,32 @@ elif menu == "📝 New Request":
 
         nuevo_id = generar_id(worksheet)
 
-        st.text_input(
-            "ID",
-            value=nuevo_id,
-            disabled=True
-        )
-
+        st.text_input("ID", value=nuevo_id, disabled=True)
         fecha = st.date_input("Date")
+        estudiante = st.text_input("Student name")
+        edad = st.number_input("Age", min_value=5, max_value=18, step=1)
+        backoffice = st.text_input("Backoffice")
+        graduado = st.selectbox("Graduate", ["No", "Yes"])
 
-        estudiante = st.text_input(
-            "Student name"
-        )
+        curso_inferido = inferir_curso_desde_texto(backoffice)
+        if curso_inferido:
+            st.info(f"Course inferred automatically: {curso_inferido}")
+            curso = curso_inferido
+        else:
+            curso = st.selectbox("Course", sorted(cursos_disponibles))
 
-        edad = st.number_input(
-            "Age",
-            min_value=5,
-            max_value=18,
-            step=1
-        )
+        tutores_disponibles = obtener_tutores_disponibles(curso, spreadsheet)
 
-        backoffice = st.text_input(
-            "Backoffice"
-        )
-
-        graduado = st.selectbox(
-            "Graduate",
-            ["No", "Yes"]
-        )
-
-        curso = st.selectbox(
-            "Course",
-            sorted(cursos_disponibles)
-        )
+        if tutores_disponibles.empty:
+            st.warning(f"No active tutors are available for {curso}")
+            tutor_asignado = ""
+        else:
+            opciones_tutor = [
+                f"{row['Name']} ({row['Casos']} cases)"
+                for _, row in tutores_disponibles.iterrows()
+            ]
+            tutor_seleccionado = st.selectbox("Assigned tutor", opciones_tutor)
+            tutor_asignado = tutor_seleccionado.split(" (")[0]
 
         solicitud = st.selectbox(
             "Request type",
@@ -548,36 +727,59 @@ elif menu == "📝 New Request":
             ]
         )
 
-        observaciones = st.text_area(
-            "Observations"
-        )
-
-        creado_por = st.text_input(
-            "Created by"
-        )
+        observaciones = st.text_area("Observations")
+        creado_por = st.text_input("Created by")
 
         if st.button("Save Request"):
+            if not tutor_asignado:
+                st.error(f"Please select an assigned tutor for {curso} before saving")
+            else:
+                mensaje = f"""
+🚨 *New leveling request assigned*
 
-            worksheet.append_row([
-                str(fecha),
-                nuevo_id,
-                estudiante,
-                edad,
-                backoffice,
-                graduado,
-                curso,
-                solicitud,
-                "Open",
-                creado_por,
-                observaciones,
-                "",
-                "",
-                ""
-            ])
+Hello *{tutor_asignado}* 👋
 
-            st.success(
-                f"✅ Request {nuevo_id} created successfully"
-            )
+A new leveling case has been assigned to you for review.
+
+━━━━━━━━━━━━━━━━━━
+
+👦 *Student:* {estudiante}
+🎂 *Age:* {edad}
+🆔 *ID:* {nuevo_id}
+📚 *Course:* {curso}
+📎 *Back Office:* {backoffice or 'Not provided'}
+📋 *Request type:* {solicitud}
+
+━━━━━━━━━━━━━━━━━━
+
+📝 *Observations*
+
+{observaciones or 'No observations provided.'}
+
+━━━━━━━━━━━━━━━━━━
+
+Thank you 💙
+"""
+
+                worksheet.append_row([
+                    str(fecha),
+                    nuevo_id,
+                    estudiante,
+                    edad,
+                    backoffice,
+                    graduado,
+                    curso,
+                    solicitud,
+                    "Open",
+                    creado_por,
+                    observaciones,
+                    "",
+                    tutor_asignado,
+                    mensaje,
+                ])
+
+                st.success(f"✅ Request {nuevo_id} created successfully")
+                st.code(mensaje)
 
     else:
 
@@ -585,72 +787,92 @@ elif menu == "📝 New Request":
 
         nuevo_id = generar_id(worksheet_extras)
 
-        st.text_input(
-            "ID",
-            value=nuevo_id,
-            disabled=True
-        )
-
+        st.text_input("ID", value=nuevo_id, disabled=True)
         fecha = st.date_input("Date")
+        backoffice_estudiante = st.text_input("Student Backoffice")
+        backoffice_grupo = st.text_input("Group name")
+        tiempo_clase_extra = st.selectbox("Extra class duration", ["30 min", "60 min"])
 
-        backoffice_estudiante = st.text_input(
-            "Student Backoffice"
-        )
-
-        backoffice_grupo = st.text_input(
-            "Group Backoffice"
-        )
-
-        tiempo_clase_extra = st.selectbox(
-            "Extra class duration",
-            ["30 min", "60 min"]
-        )
-
-        curso = st.selectbox(
-            "Course",
-            sorted(cursos_disponibles)
-        )
+        curso_inferido = inferir_curso_desde_grupo(backoffice_grupo)
+        if not curso_inferido:
+            texto_curso = " ".join(
+                parte for parte in [backoffice_estudiante, backoffice_grupo] if parte
+            )
+            curso_inferido = inferir_curso_desde_texto(texto_curso)
+        if curso_inferido:
+            idx = sorted(cursos_disponibles).index(curso_inferido) if curso_inferido in cursos_disponibles else 0
+            curso = st.selectbox("Course", sorted(cursos_disponibles), index=idx, disabled=True)
+        else:
+            curso = st.selectbox("Course", sorted(cursos_disponibles))
 
         clases_a_recuperar = st.selectbox(
             "Lessons to recover",
-            ["Lesson1", "Lesson 1 to Lesson 2", "Lesson 1 to Lesson 3", "Lesson 1 Lesson 4"]
+            ["Lesson 1", "Lesson 1 and Lesson 2", "Lesson 1 to Lesson 3", "Lesson 1 to Lesson 4"],
         )
-
         tipo_clase = st.selectbox(
             "Extra class type",
-            ["Reinforcement", "Review", "Assessment", "New Enrollment", "Other"]
+            ["Reinforcement", "Review", "Assessment", "New Enrollment", "Technical issues", "CS request", "Other"],
         )
 
-        observaciones = st.text_area(
-            "Observations"
-        )
+        observaciones = st.text_area("Observations")
+        creado_por = st.text_input("Created by")
 
-        creado_por = st.text_input(
-            "Created by"
-        )
+        tutor_asignado = ""
+        if backoffice_grupo:
+            tutor_asignado, _ = obtener_tutor_por_grupo(backoffice_grupo, spreadsheet)
+            if tutor_asignado:
+                st.info(f"Tutor assigned automatically: {tutor_asignado}")
+            else:
+                st.warning("No tutor was found for that Group name in the Groups & Tutors sheet")
 
         if st.button("Save Extra Class"):
+            if not tutor_asignado:
+                st.error("Please enter a valid Group Backoffice so the tutor can be assigned automatically")
+            else:
+                mensaje = f"""
+🚨 *New extra class assigned*
 
-            worksheet_extras.append_row([
-                str(fecha),
-                nuevo_id,
-                backoffice_estudiante,
-                backoffice_grupo,
-                tiempo_clase_extra,
-                curso,
-                clases_a_recuperar,
-                tipo_clase,
-                observaciones,
-                creado_por,
-                "",
-                "",
-                "",
-                ""
-            ])
+Hello *{tutor_asignado}* 👋
 
-            st.success(
-                f"✅ Extra class {nuevo_id} created successfully"
-            )
+A new extra class has been assigned to you. Please request the Classroom reservation through the student BO.
+
+━━━━━━━━━━━━━━━━━━
+
+👦 *Student Backoffice:* {backoffice_estudiante}
+👥 *Group name:* {backoffice_grupo}
+📚 *Course:* {curso}
+⏱️ *Duration:* {tiempo_clase_extra}
+🧾 *Lessons to recover:* {clases_a_recuperar}
+📋 *Extra class type:* {tipo_clase}
+
+━━━━━━━━━━━━━━━━━━
+
+📝 *Observations*
+
+{observaciones or 'No observations provided.'}
+
+Thank you 💙
+"""
+
+                worksheet_extras.append_row([
+                    str(fecha),
+                    nuevo_id,
+                    backoffice_estudiante,
+                    backoffice_grupo,
+                    tiempo_clase_extra,
+                    curso,
+                    clases_a_recuperar,
+                    tipo_clase,
+                    observaciones,
+                    creado_por,
+                    "",
+                    tutor_asignado,
+                    mensaje,
+                    "",
+                ])
+
+                st.success(f"✅ Extra class {nuevo_id} created successfully")
+                st.code(mensaje)
 
 # ----------------------------------
 # ASIGNAR TUTOR
@@ -658,315 +880,7 @@ elif menu == "📝 New Request":
 
 elif menu == "👨‍🏫 Assign Tutor":
 
-    st.header("👨‍🏫 Assign Tutor")
-
-    tipo_asignacion = st.selectbox(
-        "Select assignment type",
-        [
-            "Leveling",
-            "Extra Class"
-        ]
-    )
-
-    target_sheet = (
-        worksheet if tipo_asignacion == "Leveling"
-        else worksheet_extras
-    )
-
-    data = target_sheet.get_all_values()
-
-    df = pd.DataFrame(
-        data[1:],
-        columns=data[0]
-    )
-
-    if "Estado" not in df.columns:
-        df["Estado"] = "Open"
-
-    df["Estado"] = df["Estado"].apply(normalize_status)
-
-    pendientes = df[
-        df["Estado"]
-        .fillna("Open")
-        .astype(str)
-        .str.strip()
-        .isin(["Open", "Pending", ""])
-    ]
-
-    if pendientes.empty:
-
-        st.success(
-            "There are no open requests"
-        )
-
-    else:
-
-        solicitud_id = st.selectbox(
-            "Select a request",
-            pendientes["ID"]
-        )
-
-        fila = pendientes[
-            pendientes["ID"] == solicitud_id
-        ].iloc[0]
-
-        st.subheader("Information")
-
-        if tipo_asignacion == "Leveling":
-            st.write(
-                f"**Student:** {fila.get('Estudiante', '')}"
-            )
-
-            st.write(
-                f"**Age:** {fila.get('Edad', '')}"
-            )
-
-            st.write(
-                f"**Course:** {fila.get('Curso', '')}"
-            )
-
-            st.write(
-                f"**Request:** {fila.get('Solicitud', '')}"
-            )
-
-            st.write(
-                f"**Observations:** {fila.get('Observaciones', '')}"
-            )
-        else:
-            st.write(
-                f"**Student Backoffice:** {fila.get('Backoffice del Estudiante', '')}"
-            )
-
-            st.write(
-                f"**Group Backoffice:** {fila.get('Backoffice del grupo', '')}"
-            )
-
-            st.write(
-                f"**Extra class duration:** {fila.get('Tiempo de la clase extra', '')}"
-            )
-
-            st.write(
-                f"**Course:** {fila.get('Curso', '')}"
-            )
-
-            st.write(
-                f"**Extra class type:** {fila.get('Tipo de clase extra', '')}"
-            )
-
-            st.write(
-                f"**Lessons to recover:** {fila.get('Clases a recuperar', '')}"
-            )
-
-            st.write(
-                f"**Observations:** {fila.get('Observaciones', '')}"
-            )
-        
-        # ----------------------------------
-        # CARGA DE TUTORES
-        # ----------------------------------
-
-        tts_ws = spreadsheet.worksheet("TTS")
-
-        tts_data = tts_ws.get_all_records()
-
-        tts_df = pd.DataFrame(tts_data)
-
-        curso_solicitado = fila["Curso"]
-
-        # Limpiar nombres de columnas
-        tts_df.columns = (
-            tts_df.columns
-            .astype(str)
-            .str.strip()
-        )
-
-        # Verificar que exista el curso
-        if curso_solicitado not in tts_df.columns:
-
-            st.error(
-                f"The course '{curso_solicitado}' does not exist in the TTS sheet"
-            )
-
-            st.stop()
-        # Solo tutores activos para ese curso
-
-        tutores_curso = tts_df[
-            (
-                tts_df["Status"]
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                == "active"
-            )
-            &
-            (
-                tts_df[curso_solicitado]
-                .astype(str)
-                .str.strip()
-                .str.upper()
-                == "TRUE"
-            )
-        ]
-        carga_real = {}
-        try:
-
-            carga_real = calcular_carga_real(
-                spreadsheet
-            )
-
-        except Exception as e:
-
-            st.warning(
-                f"Could not calculate tutor load: {e}"
-            )
-
-        tutores_curso["Casos"] = (
-            tutores_curso["Name"]
-            .map(carga_real)
-            .fillna(0)
-            .astype(int)
-        )
-
-        tutores_curso = (
-            tutores_curso
-            .sort_values("Casos")
-        )
-
-            
-
-        if tutores_curso.empty:
-
-            st.warning(
-                f"There are no active tutors for {curso_solicitado}"
-            )
-
-            st.stop()
-
-        # Lista de tutores
-
-        opciones_tutor = [
-            f"{row['Name']} ({row['Casos']} cases)"
-            for _, row in tutores_curso.iterrows()
-        ]
-
-        tutor_seleccionado = st.selectbox(
-            "Tutor",
-            opciones_tutor
-        )
-
-        tutor = tutor_seleccionado.split(" (")[0]
-
-        # Elegir TL 
-
-        tl_options = sorted(
-            tts_df["Team Leader"]
-            .dropna()
-            .astype(str)
-            .unique()
-        )
-
-        tl = st.selectbox(
-            "TL",
-            tl_options
-        )
-
-        if st.button("Assign Tutor"):
-
-            if tipo_asignacion == "Leveling":
-                mensaje = f"""
-🚨 *New request assigned*
-
-Hello *{tutor}* 👋
-
-A new case has been assigned to you for review.
-
-━━━━━━━━━━━━━━━━━━
-
-👦 *Student:* {fila['Estudiante']}
-🎂 *Age:* {fila['Edad']}
-🆔 *ID:* {fila['ID']}
-📚 *Course:* {fila['Curso']}
-📋 *Request type:* {fila['Solicitud']}
-
-━━━━━━━━━━━━━━━━━━
-
-📝 *Observations*
-
-{fila['Observaciones']}
-
-━━━━━━━━━━━━━━━━━━
-
-⏰ *Important*
-
-This case must be worked before it reaches *8 open days* to maintain SLA compliance.
-
-Once you finish the session, please record the result here:
-
-https://docs.google.com/forms/d/e/1FAIpQLSegzGGAwN9u5SLUsXszXX6eSzgsmZL2kctmJUyenpgn07g36g/viewform
-
-Thank you 💙
-"""
-            else:
-                mensaje = f"""
-🚨 *New extra class assigned*
-
-Hello *{tutor}* 👋
-
-A new extra class has been assigned to you. Please request the Classroom room reservation through the student BO.
-
-━━━━━━━━━━━━━━━━━━
-
-👦 *Student Backoffice:* {fila.get('Backoffice del Estudiante', '')}
-📚 *Course:* {fila.get('Curso', '')}
-⏱️ *Duration:* {fila.get('Tiempo de la clase extra', '')}
-🧾 *Lessons to recover:* {fila.get('Clases a recuperar', '')}
-📋 *Extra class type:* {fila.get('Tipo de clase extra', '')}
-
-━━━━━━━━━━━━━━━━━━
-
-📝 *Observations*
-
-{fila.get('Observaciones', '')}
-
-Thank you 💙
-"""
-
-            headers = target_sheet.row_values(1)
-
-            def get_col_idx(name):
-                return headers.index(name) + 1
-
-            ids = target_sheet.col_values(2)
-
-            for i, valor in enumerate(ids):
-
-                if valor == fila["ID"]:
-
-                    fila_sheet = i + 1
-
-                    if "TL" in headers:
-                        target_sheet.update_cell(fila_sheet, get_col_idx("TL"), tl)
-
-                    if "Tutor" in headers:
-                        target_sheet.update_cell(fila_sheet, get_col_idx("Tutor"), tutor)
-
-                    if "Mensaje" in headers:
-                        target_sheet.update_cell(fila_sheet, get_col_idx("Mensaje"), mensaje)
-
-                    if "Estado" in headers:
-                        target_sheet.update_cell(fila_sheet, get_col_idx("Estado"), "Pending")
-                    elif "Enviado a Slack" in headers:
-                        target_sheet.update_cell(fila_sheet, get_col_idx("Enviado a Slack"), "Sí")
-
-                    break
-
-            st.success(
-                "✅ Tutor assigned successfully"
-            )
-
-            st.code(
-                mensaje
-            )
+    st.info("The tutor assignment section is disabled in this version of the app.")
 
 # ----------------------------------
 # VER SOLICITUDES
@@ -1139,7 +1053,7 @@ elif menu == "🔎 Search Case":
             ]
 
         for sheet, etiqueta in tipos_a_buscar:
-            data = sheet.get_all_values()
+            data = leer_hoja_valores(sheet.title)
 
             if not data:
                 continue
@@ -1196,11 +1110,7 @@ elif menu == "🔎 Search Case":
 
         try:
 
-            respuestas_ws = spreadsheet.worksheet(
-                "answers"
-            )
-
-            respuestas_data = respuestas_ws.get_all_values()
+            respuestas_data = leer_hoja_valores("answers")
 
             respuestas_df = pd.DataFrame(
                 respuestas_data[1:],
@@ -1263,11 +1173,7 @@ elif menu == "🔎 Search Case":
 
         try:
 
-            grad_ws = spreadsheet.worksheet(
-                "answers - graduates"
-            )
-
-            grad_data = grad_ws.get_all_values()
+            grad_data = leer_hoja_valores("answers - graduates")
 
             grad_df = pd.DataFrame(
                 grad_data[1:],
