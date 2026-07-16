@@ -236,6 +236,8 @@ def normalize_status(value):
         return "Open"
     if status in {"pending", "pendiente", "pending review", "pendiente review"}:
         return "Pending"
+    if status in {"closed", "cerrado", "cerrada"}:
+        return "Closed"
     return str(value).strip() or "Open"
 
 
@@ -467,7 +469,7 @@ def calcular_carga_real(spreadsheet):
 
     ids_cerrados = set(
         respuestas_df[
-            "ID de la solicitud que te hicieron (OJO Está en el hilo de slack donde fuiste asignado)"
+            "Leveling Request ID (find in slack notification)"
         ]
         .astype(str)
         .str.strip()
@@ -569,6 +571,75 @@ def calcular_carga_real(spreadsheet):
             )
 
     return carga
+
+# ----------------------------------
+# CERRAR LEVELING AL LLENAR EL FORM
+# ----------------------------------
+
+COLUMNA_ID_ANSWERS = "Leveling Request ID (find in slack notification)"
+
+
+def sincronizar_status_cerrados():
+
+    lev_data = leer_hoja_valores("LEVELING_REQUESTS")
+
+    if not lev_data:
+        return
+
+    headers = lev_data[0]
+
+    if "ID" not in headers or "Status" not in headers:
+        return
+
+    id_idx = headers.index("ID")
+    status_idx = headers.index("Status")
+
+    try:
+        answers_data = leer_hoja_valores("answers")
+    except Exception:
+        return
+
+    if not answers_data:
+        return
+
+    answers_df = pd.DataFrame(answers_data[1:], columns=answers_data[0])
+    answers_df.columns = answers_df.columns.astype(str).str.strip()
+
+    if COLUMNA_ID_ANSWERS not in answers_df.columns:
+        return
+
+    ids_cerrados = set(
+        answers_df[COLUMNA_ID_ANSWERS]
+        .astype(str)
+        .str.strip()
+    )
+    ids_cerrados.discard("")
+
+    if not ids_cerrados:
+        return
+
+    actualizaciones = []
+
+    for fila_idx, fila in enumerate(lev_data[1:], start=2):
+
+        if len(fila) <= max(id_idx, status_idx):
+            continue
+
+        id_solicitud = str(fila[id_idx]).strip()
+        status_actual = str(fila[status_idx]).strip()
+
+        if id_solicitud in ids_cerrados and status_actual != "Closed":
+            actualizaciones.append({
+                "range": gspread.utils.rowcol_to_a1(fila_idx, status_idx + 1),
+                "values": [["Closed"]],
+            })
+
+    if actualizaciones:
+        worksheet.batch_update(actualizaciones)
+        limpiar_cache_hojas()
+
+
+sincronizar_status_cerrados()
 
 # ----------------------------------
 # MENÚ
@@ -733,7 +804,7 @@ elif menu == "📝 New Request":
                 mensaje = f"""
 🚨 *New leveling request assigned*
 
-Hello *{tutor_asignado}* 👋
+Hello *@{tutor_asignado}* 👋
 
 A new leveling case has been assigned to you for review.
 
@@ -751,6 +822,12 @@ A new leveling case has been assigned to you for review.
 📝 *Observations*
 
 {observaciones or 'No observations provided.'}
+
+━━━━━━━━━━━━━━━━━━
+
+📋 *Leveling form:* https://docs.google.com/forms/d/e/1FAIpQLScnPGmzhyK7jPlqcLuWY-hd07p-DiMY58Srw_BgaPzSw8VEgg/viewform
+
+Please fill it out as you go while giving the class to the student, not just at the end.
 
 ━━━━━━━━━━━━━━━━━━
 
@@ -827,7 +904,7 @@ Thank you 💙
                 mensaje = f"""
 🚨 *New extra class assigned*
 
-Hello *{tutor_asignado}* 👋
+Hello *@{tutor_asignado}* 👋
 
 A new extra class has been assigned to you. Please request the Classroom reservation through the student BO.
 In Tutor Knowledge Base GCC could you find information about how to schedule an extra class. Let your TL know in DM if you have any question.
@@ -1118,7 +1195,7 @@ elif menu == "🔎 Search Case":
 
             respuesta = respuestas_df[
                 respuestas_df[
-                    "ID de la solicitud que te hicieron (OJO Está en el hilo de slack donde fuiste asignado)"
+                    COLUMNA_ID_ANSWERS
                 ]
                 .astype(str)
                 == str(id_busqueda).strip()
@@ -1135,19 +1212,19 @@ elif menu == "🔎 Search Case":
                 st.subheader("📊 Leveling result")
 
                 st.write(
-                    f"**Course:** {fila_respuesta.get('Curso', 'N/A')}"
+                    f"**Course:** {fila_respuesta.get('Recommended Course', 'N/A')}"
                 )
 
                 st.write(
-                    f"**Group type:** {fila_respuesta.get('Tipo de grupo:', 'N/A')}"
+                    f"**Group type:** {fila_respuesta.get('Group Type', 'N/A')}"
                 )
 
                 st.write(
-                    f"**Suggested level:** {fila_respuesta.get('Nivel sugerido:', 'N/A')}"
+                    f"**Suggested level:** {fila_respuesta.get('Suggested Level', 'N/A')}"
                 )
 
                 st.write(
-                    f"**Nivel sugerido:** {fila_respuesta.get('Resultado nivelación:  (información para CS/ISM)', 'N/A')}"
+                    f"**Placement result:** {fila_respuesta.get('Placement Result (for CS / ISM)', 'N/A')}"
                 )
 
             else:
