@@ -85,12 +85,11 @@ worksheet = get_or_create_worksheet(
         "Graduado",
         "Curso",
         "Solicitud",
-        "Estado",
         "Creado por",
         "Observaciones",
-        "TL",
         "Tutor",
-        "Mensaje"
+        "Mensaje",
+        "Status"
     ]
 )
 
@@ -107,10 +106,9 @@ worksheet_extras = get_or_create_worksheet(
         "Tipo de clase extra",
         "Observaciones",
         "Creado por:",
-        "TL",
         "Tutor",
         "Mensaje",
-        "Enviado a Slack"
+        "Status"
     ]
 )
 
@@ -209,6 +207,9 @@ def cargar_solicitudes(sheet):
             df["Fecha"],
             errors="coerce"
         )
+
+    if "Estado" not in df.columns and "Status" in df.columns:
+        df["Estado"] = df["Status"]
 
     if "Estado" not in df.columns:
         df["Estado"] = "Open"
@@ -319,36 +320,31 @@ def inferir_curso_desde_grupo(nombre_grupo):
 
     codigo = match_codigo.group(1)
 
-    match_edad = re.search(r'\((\d+[\s-]+\d+)\s*[^)]*\)', nombre)
-    if not match_edad:
+    # Python no tiene niveles: un solo curso sin importar la edad del grupo.
+    if codigo == "PY":
+        return "Python 10-12"
+
+    # El nivel/rango de edad lo determina la última parte entre paréntesis del nombre.
+    partes_parentesis = re.findall(r'\(([^)]*)\)', nombre)
+    if not partes_parentesis:
         return None
 
-    edad_raw = re.sub(r'\s+', '-', match_edad.group(1).strip())
+    ultima_parte = partes_parentesis[-1]
 
-    mapeo_codigos = {
-        "RO": "Roblox",
-        "PY": "Python",
-        "ME": "Minecraft",
-        "DC": "Digital Creativity",
-    }
-
-    materia = mapeo_codigos[codigo]
-
-    if materia in ("Roblox", "Python"):
-        curso = f"{materia} {edad_raw}"
-        if curso in cursos_disponibles:
-            return curso
+    nums = re.findall(r'\d+', ultima_parte)
+    if not nums:
         return None
 
-    nums = re.findall(r'\d+', edad_raw)
-    if nums:
-        primer_num = int(nums[0])
-        nivel = "Level 1" if primer_num <= 12 else "Level 2"
-        curso = f"{materia} {nivel}"
-        if curso in cursos_disponibles:
-            return curso
+    primer_num = int(nums[0])
 
-    return None
+    if codigo == "RO":
+        return "Roblox 8-9" if primer_num <= 9 else "Roblox 10-12"
+
+    materia = "Minecraft" if codigo == "ME" else "Digital Creativity"
+    nivel = "Level 1" if primer_num <= 9 else "Level 2"
+    curso = f"{materia} {nivel}"
+
+    return curso if curso in cursos_disponibles else None
 
 
 def obtener_tutor_por_grupo(grupo_backoffice, spreadsheet):
@@ -456,7 +452,7 @@ def calcular_carga_real(spreadsheet):
     # RESPUESTAS (casos cerrados)
     # ----------------------------------
 
-    respuestas_data = leer_hoja_valores("respuestas")
+    respuestas_data = leer_hoja_valores("answers")
 
     respuestas_df = pd.DataFrame(
         respuestas_data[1:],
@@ -517,7 +513,7 @@ def calcular_carga_real(spreadsheet):
     # RESPUESTAS GRADUADOS
     # ----------------------------------
 
-    grad_data = leer_hoja_valores("respuestas - graduados")
+    grad_data = leer_hoja_valores("answers - graduates")
 
     grad_df = pd.DataFrame(
         grad_data[1:],
@@ -770,12 +766,11 @@ Thank you 💙
                     graduado,
                     curso,
                     solicitud,
-                    "Open",
                     creado_por,
                     observaciones,
-                    "",
                     tutor_asignado,
                     mensaje,
+                    "Open",
                 ])
 
                 st.success(f"✅ Request {nuevo_id} created successfully")
@@ -835,6 +830,7 @@ Thank you 💙
 Hello *{tutor_asignado}* 👋
 
 A new extra class has been assigned to you. Please request the Classroom reservation through the student BO.
+In Tutor Knowledge Base GCC could you find information about how to schedule an extra class. Let your TL know in DM if you have any question.
 
 ━━━━━━━━━━━━━━━━━━
 
@@ -865,10 +861,9 @@ Thank you 💙
                     tipo_clase,
                     observaciones,
                     creado_por,
-                    "",
                     tutor_asignado,
                     mensaje,
-                    "",
+                    "Open",
                 ])
 
                 st.success(f"✅ Extra class {nuevo_id} created successfully")
